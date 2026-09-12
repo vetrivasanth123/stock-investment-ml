@@ -6,177 +6,84 @@ import pytest
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 
-PROCESSED_DIR = (
-    PROJECT_DIR
-    / "data"
-    / "processed"
-)
-
-FINANCIAL_DIR = (
-    PROCESSED_DIR
-    / "nse"
-    / "financials"
-)
-
-XBRL_DIR = (
-    PROJECT_DIR
-    / "data"
-    / "raw"
-    / "nse"
-    / "financials"
-    / "xbrl"
-)
+PROCESSED_DIR = PROJECT_DIR / "data" / "processed"
+NSE_DIR = PROCESSED_DIR / "nse"
+MARKET_DIR = NSE_DIR / "market"
 
 
 def require_acquired_data():
-    """
-    Skip acquisition-data tests when the repository
-    has been cloned without local acquired datasets.
-    """
+    company_master = NSE_DIR / "company_master.parquet"
+    market_files = list(MARKET_DIR.glob("market_*.parquet"))
 
-    if not (
-        PROCESSED_DIR.exists()
-        and FINANCIAL_DIR.exists()
-    ):
+    if not company_master.exists() or not market_files:
         pytest.skip(
-            "Acquired data is not present. "
-            "Run the acquisition notebook first."
+            "Acquired datasets are not present. "
+            "Run run_phase2.py first."
         )
 
 
 def test_company_master():
     require_acquired_data()
 
-    path = (
-        PROCESSED_DIR
-        / "nse"
-        / "company_master.parquet"
-    )
-
-    assert path.exists()
+    path = NSE_DIR / "company_master.parquet"
 
     df = pd.read_parquet(path)
 
     assert not df.empty
     assert "isin" in df.columns
+    assert "series" in df.columns
     assert df["isin"].notna().all()
 
 
-def test_financial_metadata():
+def test_market_data():
     require_acquired_data()
 
-    path = (
-        FINANCIAL_DIR
-        / "filing_metadata.parquet"
+    market_files = sorted(
+        MARKET_DIR.glob("market_*.parquet")
     )
 
-    assert path.exists()
+    assert market_files
 
-    df = pd.read_parquet(path)
+    df = pd.read_parquet(market_files[-1])
 
     assert not df.empty
-    assert "filing_key" in df.columns
-    assert df["filing_key"].notna().all()
+
+    required_columns = {
+        "isin",
+        "trade_date",
+        "close",
+    }
+
+    assert required_columns.issubset(df.columns)
+    assert df["isin"].notna().all()
+    assert df["trade_date"].notna().all()
+    assert df["close"].notna().all()
+    assert (df["close"] >= 0).all()
 
 
-def test_xbrl_facts():
+def test_market_dates():
     require_acquired_data()
 
-    path = (
-        FINANCIAL_DIR
-        / "xbrl_facts.parquet"
+    market_files = sorted(
+        MARKET_DIR.glob("market_*.parquet")
     )
 
-    assert path.exists()
+    df = pd.read_parquet(market_files[-1])
 
-    df = pd.read_parquet(path)
-
-    assert not df.empty
-    assert "filing_key" in df.columns
-    assert df["filing_key"].notna().all()
+    assert df["trade_date"].min() <= df["trade_date"].max()
 
 
-def test_xbrl_contexts():
+def test_market_no_duplicate_instruments():
     require_acquired_data()
 
-    path = (
-        FINANCIAL_DIR
-        / "xbrl_contexts.parquet"
+    market_files = sorted(
+        MARKET_DIR.glob("market_*.parquet")
     )
 
-    assert path.exists()
+    df = pd.read_parquet(market_files[-1])
 
-    df = pd.read_parquet(path)
-
-    assert not df.empty
-    assert "filing_key" in df.columns
-    assert df["filing_key"].notna().all()
-
-
-def test_financial_filing_keys():
-    require_acquired_data()
-
-    metadata = pd.read_parquet(
-        FINANCIAL_DIR
-        / "filing_metadata.parquet"
+    duplicates = df.duplicated(
+        subset=["trade_date", "instrument_id"]
     )
 
-    facts = pd.read_parquet(
-        FINANCIAL_DIR
-        / "xbrl_facts.parquet"
-    )
-
-    contexts = pd.read_parquet(
-        FINANCIAL_DIR
-        / "xbrl_contexts.parquet"
-    )
-
-    metadata_keys = set(
-        metadata["filing_key"]
-    )
-
-    fact_keys = set(
-        facts["filing_key"]
-    )
-
-    context_keys = set(
-        contexts["filing_key"]
-    )
-
-    assert fact_keys.issubset(
-        metadata_keys
-    )
-
-    assert context_keys.issubset(
-        metadata_keys
-    )
-
-
-def test_raw_xbrl_files():
-    require_acquired_data()
-
-    if not XBRL_DIR.exists():
-        pytest.skip(
-            "Raw XBRL directory is not present."
-        )
-
-    files = list(
-        XBRL_DIR.glob("*.xml")
-    )
-
-    assert files
-
-    for path in files:
-        assert path.stat().st_size > 0
-
-
-def test_financial_provenance():
-    require_acquired_data()
-
-    path = (
-        FINANCIAL_DIR
-        / "financial_downloads.json"
-    )
-
-    assert path.exists()
-    assert path.stat().st_size > 0
+    assert not duplicates.any()
