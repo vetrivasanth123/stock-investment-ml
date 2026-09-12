@@ -8,41 +8,28 @@ from pathlib import Path
 import json
 
 import pandas as pd
+from IPython.display import display
 
 from src.data.providers import nse_market
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
+NOTEBOOK_PATH = PROJECT_ROOT / "notebooks" / "03-target-creation.ipynb"
 
-NOTEBOOK_PATH = (
-    PROJECT_ROOT
-    / "notebooks"
-    / "03-target-creation.ipynb"
-)
-
-# Verified NSE UDiFF history boundary used by Phase 3.
-# The end date remains fully dynamic.
 HISTORY_START = date(2024, 7, 8)
 
 
 def load_phase3_market_history():
-    """Acquire the verified historical NSE market dataset."""
-
     today = date.today()
 
     print("\n" + "=" * 60)
     print("PHASE 3 — ACQUIRING HISTORICAL MARKET DATA")
     print("=" * 60)
+    print(f"\nRange: {HISTORY_START} → {today}")
 
-    print(
-        f"\nRange: {HISTORY_START} → {today}"
-    )
-
-    recent_history = (
-        nse_market.collect_market_data(
-            HISTORY_START,
-            today,
-        )
+    recent_history = nse_market.collect_market_data(
+        HISTORY_START,
+        today,
     )
 
     if recent_history.empty:
@@ -58,38 +45,18 @@ def load_phase3_market_history():
     recent_history = (
         recent_history
         .drop_duplicates(
-            subset=[
-                "trade_date",
-                "instrument_id",
-            ]
+            subset=["trade_date", "instrument_id"]
         )
-        .sort_values(
-            [
-                "nse_symbol",
-                "trade_date",
-            ]
-        )
+        .sort_values(["nse_symbol", "trade_date"])
         .reset_index(drop=True)
     )
 
+    print(f"\nRows        : {len(recent_history):,}")
+    print(f"Companies   : {recent_history['isin'].nunique():,}")
+    print(f"Trading days: {recent_history['trade_date'].nunique():,}")
     print(
-        f"\nRows       : {len(recent_history):,}"
-    )
-
-    print(
-        f"Companies  : "
-        f"{recent_history['isin'].nunique():,}"
-    )
-
-    print(
-        f"Trading days: "
-        f"{recent_history['trade_date'].nunique():,}"
-    )
-
-    print(
-        f"Date range : "
-        f"{recent_history['trade_date'].min().date()}"
-        f" → "
+        f"Date range  : "
+        f"{recent_history['trade_date'].min().date()} → "
         f"{recent_history['trade_date'].max().date()}"
     )
 
@@ -97,30 +64,20 @@ def load_phase3_market_history():
 
 
 def main():
-
     print("=" * 60)
     print("PHASE 3 — TARGET CREATION")
     print("=" * 60)
 
-    # --------------------------------------------------------
-    # Validate notebook
-    # --------------------------------------------------------
-
     if not NOTEBOOK_PATH.exists():
         raise FileNotFoundError(
-            f"Notebook not found:\n{NOTEBOOK_PATH}"
+            f"Notebook not found: {NOTEBOOK_PATH}"
         )
 
-    with NOTEBOOK_PATH.open(
-        "r",
-        encoding="utf-8",
-    ) as file:
+    with NOTEBOOK_PATH.open("r", encoding="utf-8") as file:
         notebook = json.load(file)
 
     if notebook.get("nbformat") != 4:
-        raise ValueError(
-            "Expected nbformat 4 notebook."
-        )
+        raise ValueError("Expected nbformat 4 notebook.")
 
     code_cells = [
         cell
@@ -130,39 +87,24 @@ def main():
 
     if len(code_cells) != 4:
         raise ValueError(
-            "Phase 3 notebook must contain exactly "
-            f"4 code cells; found {len(code_cells)}."
+            f"Phase 3 notebook must contain exactly 4 code cells; "
+            f"found {len(code_cells)}."
         )
 
-    # --------------------------------------------------------
-    # Acquire full Phase 3 history
-    # --------------------------------------------------------
-
     recent_history = load_phase3_market_history()
-
-    # --------------------------------------------------------
-    # Execute four notebook cells
-    # --------------------------------------------------------
 
     namespace = {
         "__name__": "__main__",
         "__file__": str(NOTEBOOK_PATH),
         "recent_history": recent_history,
+        "display": display,
     }
 
-    for index, cell in enumerate(
-        code_cells,
-        start=1,
-    ):
-
-        source = "".join(
-            cell.get("source", [])
-        )
+    for index, cell in enumerate(code_cells, start=1):
+        source = "".join(cell.get("source", []))
 
         print("\n" + "=" * 60)
-        print(
-            f"EXECUTING PHASE 3 CELL {index}/4"
-        )
+        print(f"EXECUTING PHASE 3 CELL {index}/4")
         print("=" * 60)
 
         exec(
@@ -173,10 +115,6 @@ def main():
             ),
             namespace,
         )
-
-    # --------------------------------------------------------
-    # Final validation
-    # --------------------------------------------------------
 
     required_variables = [
         "nifty_ntr_benchmark",
@@ -193,20 +131,14 @@ def main():
 
     if missing:
         raise RuntimeError(
-            "Phase 3 did not produce required outputs:\n"
-            f"{missing}"
+            f"Phase 3 did not produce required outputs: {missing}"
         )
 
     final_target = namespace["final_target"]
+    target_column = "target_excess_return_252d"
 
     if final_target.empty:
-        raise RuntimeError(
-            "Final Phase 3 target is empty."
-        )
-
-    target_column = (
-        "target_excess_return_252d"
-    )
+        raise RuntimeError("Final Phase 3 target is empty.")
 
     if target_column not in final_target.columns:
         raise RuntimeError(
@@ -221,26 +153,13 @@ def main():
     print("\n" + "=" * 60)
     print("PHASE 3 RUNNER VALIDATION")
     print("=" * 60)
-
-    print(
-        f"\nFinal target rows : "
-        f"{len(final_target):,}"
-    )
-
-    print(
-        f"Companies         : "
-        f"{final_target['isin'].nunique():,}"
-    )
-
+    print(f"\nFinal target rows : {len(final_target):,}")
+    print(f"Companies         : {final_target['isin'].nunique():,}")
     print(
         f"Decision dates    : "
         f"{final_target['decision_date'].nunique():,}"
     )
-
-    print(
-        f"Target column     : "
-        f"{target_column}"
-    )
+    print(f"Target column     : {target_column}")
 
     print("\n" + "=" * 60)
     print("PHASE 3: COMPLETE")
