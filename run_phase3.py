@@ -3,9 +3,13 @@
 # run_phase3.py
 # ============================================================
 
+from datetime import date
 from pathlib import Path
 import json
+
 import pandas as pd
+
+from src.data.providers import nse_market
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -16,47 +20,35 @@ NOTEBOOK_PATH = (
     / "03-target-creation.ipynb"
 )
 
-MARKET_DIR = (
-    PROJECT_ROOT
-    / "data"
-    / "processed"
-    / "nse"
-    / "market"
-)
+# Verified NSE UDiFF history boundary used by Phase 3.
+# The end date remains fully dynamic.
+HISTORY_START = date(2024, 7, 8)
 
 
-def load_market_history():
-    """Load all processed NSE market Parquet files."""
+def load_phase3_market_history():
+    """Acquire the verified historical NSE market dataset."""
 
-    files = sorted(
-        MARKET_DIR.glob("market_*.parquet")
-    )
+    today = date.today()
 
-    if not files:
-        raise FileNotFoundError(
-            "No processed NSE market Parquet files found in:\n"
-            f"{MARKET_DIR}\n\n"
-            "Run Phase 2 / acquire the historical market data first."
-        )
+    print("\n" + "=" * 60)
+    print("PHASE 3 — ACQUIRING HISTORICAL MARKET DATA")
+    print("=" * 60)
 
     print(
-        f"\nLoading {len(files)} market Parquet file(s)..."
+        f"\nRange: {HISTORY_START} → {today}"
     )
 
-    frames = []
-
-    for path in files:
-
-        print(f" - {path.name}")
-
-        df = pd.read_parquet(path)
-
-        frames.append(df)
-
-    recent_history = pd.concat(
-        frames,
-        ignore_index=True,
+    recent_history = (
+        nse_market.collect_market_data(
+            HISTORY_START,
+            today,
+        )
     )
+
+    if recent_history.empty:
+        raise RuntimeError(
+            "Historical market acquisition returned no data."
+        )
 
     recent_history["trade_date"] = pd.to_datetime(
         recent_history["trade_date"],
@@ -73,35 +65,29 @@ def load_market_history():
         )
         .sort_values(
             [
+                "nse_symbol",
                 "trade_date",
-                "instrument_id",
             ]
         )
         .reset_index(drop=True)
     )
 
-    if recent_history.empty:
-        raise ValueError(
-            "Processed market dataset is empty."
-        )
-
     print(
-        f"\nLoaded market rows : "
-        f"{len(recent_history):,}"
+        f"\nRows       : {len(recent_history):,}"
     )
 
     print(
-        f"Companies           : "
+        f"Companies  : "
         f"{recent_history['isin'].nunique():,}"
     )
 
     print(
-        f"Trading days        : "
+        f"Trading days: "
         f"{recent_history['trade_date'].nunique():,}"
     )
 
     print(
-        f"Date range          : "
+        f"Date range : "
         f"{recent_history['trade_date'].min().date()}"
         f" → "
         f"{recent_history['trade_date'].max().date()}"
@@ -117,7 +103,7 @@ def main():
     print("=" * 60)
 
     # --------------------------------------------------------
-    # 1. Validate notebook
+    # Validate notebook
     # --------------------------------------------------------
 
     if not NOTEBOOK_PATH.exists():
@@ -149,13 +135,13 @@ def main():
         )
 
     # --------------------------------------------------------
-    # 2. Load Phase 2 market data
+    # Acquire full Phase 3 history
     # --------------------------------------------------------
 
-    recent_history = load_market_history()
+    recent_history = load_phase3_market_history()
 
     # --------------------------------------------------------
-    # 3. Execute the four Phase 3 cells
+    # Execute four notebook cells
     # --------------------------------------------------------
 
     namespace = {
@@ -189,11 +175,10 @@ def main():
         )
 
     # --------------------------------------------------------
-    # 4. Final validation
+    # Final validation
     # --------------------------------------------------------
 
     required_variables = [
-        "recent_history",
         "nifty_ntr_benchmark",
         "phase3_target",
         "final_target",
