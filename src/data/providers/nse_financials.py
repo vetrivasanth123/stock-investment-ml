@@ -301,62 +301,35 @@ def collect_filing_package(record):
     )
 
 
-def save_filing_package(
-    metadata,
-    facts_df,
-    contexts_df,
+def save_raw_xbrl(
+    filing_key,
     xbrl_content,
 ):
     XBRL_RAW_DIR.mkdir(
         parents=True,
         exist_ok=True,
     )
-    METADATA_DIR.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
 
-    filing_key = metadata["filing_key"]
-
-    xbrl_path = (
+    path = (
         XBRL_RAW_DIR /
         f"{filing_key}.xml"
     )
 
-    xbrl_path.write_bytes(xbrl_content)
+    path.write_bytes(xbrl_content)
 
-    facts_path = (
-        XBRL_RAW_DIR.parent /
-        "xbrl_facts.parquet"
-    )
-
-    contexts_path = (
-        XBRL_RAW_DIR.parent /
-        "xbrl_contexts.parquet"
-    )
-
-    facts_df.to_parquet(
-        facts_path,
-        index=False,
-    )
-
-    contexts_df.to_parquet(
-        contexts_path,
-        index=False,
-    )
-
-    return xbrl_path
+    return path
 
 
-def acquire_financial_filings(
-    records,
-):
+def acquire_financial_filings(records):
     metadata_rows = []
     fact_frames = []
     context_frames = []
     manifest_rows = []
 
     for record in records:
+
+        filing_key = safe_filing_key(record)
+
         try:
             (
                 metadata,
@@ -365,44 +338,60 @@ def acquire_financial_filings(
                 xbrl_content,
             ) = collect_filing_package(record)
 
-            xbrl_path = save_filing_package(
-                metadata,
-                facts,
-                contexts,
+            xbrl_path = save_raw_xbrl(
+                filing_key,
                 xbrl_content,
             )
 
             metadata_rows.append(metadata)
+
             fact_frames.append(facts)
+
             context_frames.append(contexts)
 
             manifest_rows.append(
                 {
-                    "provider": "National Stock Exchange of India Limited (NSE)",
-                    "dataset": "Integrated Filing XBRL",
-                    "filing_key": metadata["filing_key"],
-                    "symbol": metadata["symbol"],
-                    "period_end": metadata["period_end"],
-                    "source_url": metadata["xbrl_url"],
-                    "local_file": str(xbrl_path),
-                    "accessed_at_utc": datetime.now(
-                        timezone.utc
-                    ).isoformat(),
-                    "status": "downloaded",
+                    "provider":
+                        "National Stock Exchange of India Limited (NSE)",
+                    "dataset":
+                        "Integrated Filing XBRL",
+                    "filing_key":
+                        filing_key,
+                    "symbol":
+                        metadata["symbol"],
+                    "period_end":
+                        metadata["period_end"],
+                    "source_url":
+                        metadata["xbrl_url"],
+                    "local_file":
+                        str(xbrl_path),
+                    "accessed_at_utc":
+                        datetime.now(
+                            timezone.utc
+                        ).isoformat(),
+                    "status":
+                        "downloaded",
                 }
             )
 
         except Exception as exc:
+
             manifest_rows.append(
                 {
-                    "filing_key": safe_filing_key(record),
-                    "symbol": record.get("symbol"),
-                    "status": "failed",
-                    "error": str(exc),
+                    "filing_key":
+                        filing_key,
+                    "symbol":
+                        record.get("symbol"),
+                    "status":
+                        "failed",
+                    "error":
+                        str(exc),
                 }
             )
 
-    metadata_df = pd.DataFrame(metadata_rows)
+    metadata_df = pd.DataFrame(
+        metadata_rows
+    )
 
     facts_df = (
         pd.concat(
