@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import json
 import re
+import time
 
 import pandas as pd
 import requests
@@ -11,14 +12,7 @@ from lxml import etree
 
 PROJECT_DIR = Path(__file__).resolve().parents[3]
 
-RAW_DIR = (
-    PROJECT_DIR
-    / "data"
-    / "raw"
-    / "nse"
-    / "financials"
-)
-
+RAW_DIR = PROJECT_DIR / "data" / "raw" / "nse" / "financials"
 XBRL_RAW_DIR = RAW_DIR / "xbrl"
 METADATA_DIR = RAW_DIR / "metadata"
 
@@ -39,6 +33,11 @@ NSE_HEADERS = {
     ),
     "Referer": "https://www.nseindia.com/",
 }
+
+REQUEST_TIMEOUT = 60
+MAX_RETRIES = 3
+RETRY_DELAY = 3
+
 
 STRUCTURAL_LOCAL_NAMES = {
     "xbrl",
@@ -78,15 +77,31 @@ def fetch_integrated_filings(
     if symbol:
         params["symbol"] = symbol
 
-    response = requests.get(
-        NSE_INTEGRATED_FILINGS_API,
-        params=params,
-        headers=NSE_HEADERS,
-        timeout=30,
-    )
-    response.raise_for_status()
+    last_error = None
 
-    return response.json()
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            response = requests.get(
+                NSE_INTEGRATED_FILINGS_API,
+                params=params,
+                headers=NSE_HEADERS,
+                timeout=REQUEST_TIMEOUT,
+            )
+            response.raise_for_status()
+            return response.json()
+
+        except requests.RequestException as exc:
+            last_error = exc
+
+            if attempt == MAX_RETRIES:
+                break
+
+            time.sleep(RETRY_DELAY * attempt)
+
+    raise RuntimeError(
+        f"NSE integrated filing request failed after "
+        f"{MAX_RETRIES} attempts: {last_error}"
+    )
 
 
 def collect_filing_metadata(
@@ -124,14 +139,33 @@ def collect_filing_metadata(
 
 
 def fetch_xbrl(xbrl_url):
-    response = requests.get(
-        xbrl_url,
-        headers=NSE_HEADERS,
-        timeout=60,
-    )
-    response.raise_for_status()
+    if not xbrl_url:
+        raise ValueError("Missing XBRL URL.")
 
-    return response.content
+    last_error = None
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            response = requests.get(
+                xbrl_url,
+                headers=NSE_HEADERS,
+                timeout=REQUEST_TIMEOUT,
+            )
+            response.raise_for_status()
+            return response.content
+
+        except requests.RequestException as exc:
+            last_error = exc
+
+            if attempt == MAX_RETRIES:
+                break
+
+            time.sleep(RETRY_DELAY * attempt)
+
+    raise RuntimeError(
+        f"XBRL download failed after "
+        f"{MAX_RETRIES} attempts: {last_error}"
+    )
 
 
 def parse_xbrl_facts(xbrl_content):
@@ -155,9 +189,7 @@ def parse_xbrl_facts(xbrl_content):
         rows.append(
             {
                 "tag": local_name,
-                "qualified_tag": (
-                    etree.QName(element).text
-                ),
+                "qualified_tag": etree.QName(element).text,
                 "value_raw": element.text,
                 "context_ref": context_ref,
                 "unit_ref": element.get("unitRef"),
@@ -311,8 +343,8 @@ def save_raw_xbrl(
     )
 
     path = (
-        XBRL_RAW_DIR /
-        f"{filing_key}.xml"
+        XBRL_RAW_DIR
+        / f"{filing_key}.xml"
     )
 
     path.write_bytes(xbrl_content)
@@ -327,7 +359,6 @@ def acquire_financial_filings(records):
     manifest_rows = []
 
     for record in records:
-
         filing_key = safe_filing_key(record)
 
         try:
@@ -344,54 +375,38 @@ def acquire_financial_filings(records):
             )
 
             metadata_rows.append(metadata)
-
             fact_frames.append(facts)
-
             context_frames.append(contexts)
 
             manifest_rows.append(
                 {
-                    "provider":
-                        "National Stock Exchange of India Limited (NSE)",
-                    "dataset":
-                        "Integrated Filing XBRL",
-                    "filing_key":
-                        filing_key,
-                    "symbol":
-                        metadata["symbol"],
-                    "period_end":
-                        metadata["period_end"],
-                    "source_url":
-                        metadata["xbrl_url"],
-                    "local_file":
-                        str(xbrl_path),
-                    "accessed_at_utc":
-                        datetime.now(
-                            timezone.utc
-                        ).isoformat(),
-                    "status":
-                        "downloaded",
+                    "provider": (
+                        "National Stock Exchange of India Limited (NSE)"
+                    ),
+                    "dataset": "Integrated Filing XBRL",
+                    "filing_key": filing_key,
+                    "symbol": metadata["symbol"],
+                    "period_end": metadata["period_end"],
+                    "source_url": metadata["xbrl_url"],
+                    "local_file": str(xbrl_path),
+                    "accessed_at_utc": datetime.now(
+                        timezone.utc
+                    ).isoformat(),
+                    "status": "downloaded",
                 }
             )
 
         except Exception as exc:
-
             manifest_rows.append(
                 {
-                    "filing_key":
-                        filing_key,
-                    "symbol":
-                        record.get("symbol"),
-                    "status":
-                        "failed",
-                    "error":
-                        str(exc),
+                    "filing_key": filing_key,
+                    "symbol": record.get("symbol"),
+                    "status": "failed",
+                    "error": str(exc),
                 }
             )
 
-    metadata_df = pd.DataFrame(
-        metadata_rows
-    )
+    metadata_df = pd.DataFrame(metadata_rows)
 
     facts_df = (
         pd.concat(
