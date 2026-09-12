@@ -26,15 +26,18 @@ from src.data.processing.acquisition_snapshot import (
 
 PROJECT_DIR = Path(__file__).resolve().parent
 
+MARKET_START = date(2026, 8, 18)
+MARKET_END = date(2026, 8, 22)
+
+FILING_PAGE_SIZE = 100
+FILING_MAX_PAGES = 1
+
 
 def run_phase2():
     print("=" * 60)
     print("PHASE 2 — NSE DATA ACQUISITION")
     print("=" * 60)
 
-    # ---------------------------------------------------------
-    # 1. Company master
-    # ---------------------------------------------------------
     print("\n[1/6] Building NSE company master...")
 
     company_master = build_security_master()
@@ -49,14 +52,11 @@ def run_phase2():
     print("Company master:", len(company_master))
     print("EQ universe:", len(investable_universe))
 
-    # ---------------------------------------------------------
-    # 2. Market data
-    # ---------------------------------------------------------
     print("\n[2/6] Acquiring NSE market data...")
 
     market_data = collect_market_data(
-        date(2026, 8, 18),
-        date(2026, 8, 22),
+        MARKET_START,
+        MARKET_END,
     )
 
     company_prices = integrate_market_with_company_master(
@@ -64,27 +64,31 @@ def run_phase2():
         investable_universe,
     )
 
-    market_path = save_market_data(company_prices)
-
-    print("Market rows:", len(company_prices))
-    print("Companies:", company_prices["isin"].nunique())
-    print("Market saved:", market_path)
-
-    # ---------------------------------------------------------
-    # 3. Financial filing metadata
-    # ---------------------------------------------------------
-    print("\n[3/6] Acquiring financial filing metadata...")
-
-    filing_records = collect_filing_metadata(
-        page_size=100,
-        max_pages=1,
+    market_path = save_market_data(
+        company_prices
     )
 
-    print("Financial filings:", len(filing_records))
+    print("Market rows:", len(company_prices))
+    print(
+        "Companies:",
+        company_prices["isin"].nunique(),
+    )
+    print("Market saved:", market_path)
 
-    # ---------------------------------------------------------
-    # 4. XBRL acquisition
-    # ---------------------------------------------------------
+    print(
+        "\n[3/6] Acquiring financial filing metadata..."
+    )
+
+    filing_records = collect_filing_metadata(
+        page_size=FILING_PAGE_SIZE,
+        max_pages=FILING_MAX_PAGES,
+    )
+
+    print(
+        "Financial filings:",
+        len(filing_records),
+    )
+
     print("\n[4/6] Acquiring XBRL financial data...")
 
     (
@@ -92,7 +96,9 @@ def run_phase2():
         financial_facts_df,
         financial_contexts_df,
         financial_manifest_df,
-    ) = acquire_financial_filings(filing_records)
+    ) = acquire_financial_filings(
+        filing_records
+    )
 
     validate_filing_dataset(
         financial_metadata_df,
@@ -100,14 +106,22 @@ def run_phase2():
         financial_contexts_df,
     )
 
-    print("Filings:", len(financial_metadata_df))
-    print("Facts:", len(financial_facts_df))
-    print("Contexts:", len(financial_contexts_df))
+    print(
+        "Filings:",
+        len(financial_metadata_df),
+    )
+    print(
+        "Facts:",
+        len(financial_facts_df),
+    )
+    print(
+        "Contexts:",
+        len(financial_contexts_df),
+    )
 
-    # ---------------------------------------------------------
-    # 5. Combine and persist financial data
-    # ---------------------------------------------------------
-    print("\n[5/6] Processing and saving financial data...")
+    print(
+        "\n[5/6] Processing and saving financial data..."
+    )
 
     financial_dataset = combine_filing_data(
         financial_metadata_df,
@@ -154,12 +168,15 @@ def run_phase2():
         indent=2,
     )
 
-    print("Financial dataset:", financial_dataset.shape)
-    print("Financial data saved:", output_dir)
+    print(
+        "Financial dataset:",
+        financial_dataset.shape,
+    )
+    print(
+        "Financial data saved:",
+        output_dir,
+    )
 
-    # ---------------------------------------------------------
-    # 6. Acquisition snapshot
-    # ---------------------------------------------------------
     print("\n[6/6] Creating Phase 2 snapshot...")
 
     raw_xbrl_dir = (
