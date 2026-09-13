@@ -16,30 +16,27 @@ df = pd.read_parquet(IN)
 if df.empty:
     raise RuntimeError("Phase 4 ranking is empty.")
 
-# Remove invalid predictions/prices
 df = df[
     df["close"].gt(0) &
     df["predicted_excess_return_252d"].notna()
 ].copy()
 
-# Percentile score: higher = stronger model signal
+# Higher predicted excess return = stronger signal
 df["score_pct"] = (
     df["predicted_excess_return_252d"]
     .rank(pct=True, method="average") * 100
 )
 
-# Simple decision tiers
 df["recommendation"] = "AVOID"
 df.loc[df["score_pct"] >= 70, "recommendation"] = "WATCH"
 df.loc[df["score_pct"] >= 90, "recommendation"] = "BUY"
 
-# Strongest candidates first
+# Sort by actual model strength
 df = df.sort_values(
-    ["recommendation", "predicted_excess_return_252d"],
-    ascending=[True, False]
-)
+    "predicted_excess_return_252d",
+    ascending=False
+).reset_index(drop=True)
 
-# Keep original model rank as well
 df["final_rank"] = range(1, len(df) + 1)
 
 result = df[
@@ -59,13 +56,12 @@ result = df[
 path = OUT / "latest_recommendations.parquet"
 result.to_parquet(path, index=False)
 
-# RALLIS / RAL
 ral = result[
     result["nse_symbol"].str.upper().isin(["RALLIS", "RAL"])
 ]
 
-# Top 25
 print("Stocks evaluated:", f"{len(result):,}")
+
 print("\n=== TOP 25 ===")
 print(result.head(25).to_string(index=False))
 
@@ -79,9 +75,7 @@ summary = {
     "watch_count": int((result["recommendation"] == "WATCH").sum()),
     "avoid_count": int((result["recommendation"] == "AVOID").sum()),
     "top_stock": str(result.iloc[0]["nse_symbol"]),
-    "top_prediction": float(
-        result.iloc[0]["predicted_excess_return_252d"]
-    ),
+    "top_prediction": float(result.iloc[0]["predicted_excess_return_252d"]),
 }
 
 (OUT / "phase5_metadata.json").write_text(
