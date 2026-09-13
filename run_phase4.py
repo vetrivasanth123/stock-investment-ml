@@ -2,359 +2,185 @@ from pathlib import Path
 import json
 import numpy as np
 import pandas as pd
-
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.metrics import mean_absolute_error, r2_score
-
 from src.data.providers.nse_market import load_market_data
 
-
 ROOT = Path(__file__).resolve().parent
-TARGET_PATH = ROOT / "data/processed/targets/phase3_target.parquet"
-OUT_DIR = ROOT / "data/processed/model"
-OUT_DIR.mkdir(parents=True, exist_ok=True)
-
+TARGET = ROOT / "data/processed/targets/phase3_target.parquet"
+OUT = ROOT / "data/processed/model"
+OUT.mkdir(parents=True, exist_ok=True)
 
 print("=" * 60)
 print("PHASE 4 — ML MODEL")
 print("=" * 60)
 
-
-# ------------------------------------------------------------
-# 1. LOAD PHASE 2 + PHASE 3 OUTPUTS
-# ------------------------------------------------------------
-
-market = load_market_data().copy()
-target = pd.read_parquet(TARGET_PATH)
+# Phase 2 + Phase 3
+market = load_market_data()
+target = pd.read_parquet(TARGET)
 
 market["trade_date"] = pd.to_datetime(market["trade_date"])
 target["decision_date"] = pd.to_datetime(target["decision_date"])
 
-if "series" in market.columns:
-    market = market[market["series"].eq("EQ")].copy()
+if "series" in market:
+    market = market[market["series"].eq("EQ")]
 
 market = (
-    market
-    .drop_duplicates(["isin", "trade_date"])
-    .sort_values(["isin", "trade_date"])
-    .reset_index(drop=True)
+    market.drop_duplicates(["isin", "trade_date"])
+          .sort_values(["isin", "trade_date"])
+          .reset_index(drop=True)
 )
 
-if market.empty:
-    raise RuntimeError("Phase 2 EQ market data is empty.")
-
-if target.empty:
-    raise RuntimeError("Phase 3 target data is empty.")
+if market.empty or target.empty:
+    raise RuntimeError("Phase 2 market data or Phase 3 target is empty.")
 
 print("Market EQ rows:", f"{len(market):,}")
 print("Target rows   :", f"{len(target):,}")
-print("Latest date  :", market["trade_date"].max().date())
+print("Latest date  :", market.trade_date.max().date())
 
-
-# ------------------------------------------------------------
-# 2. CREATE HISTORICAL FEATURES
-# ------------------------------------------------------------
-
+# Historical features
 g = market.groupby("isin", sort=False)
 
-market["ret_1d"] = g["close"].pct_change()
-market["ret_5d"] = g["close"].pct_change(5)
-market["ret_20d"] = g["close"].pct_change(20)
-market["ret_60d"] = g["close"].pct_change(60)
-market["ret_126d"] = g["close"].pct_change(126)
-market["ret_252d"] = g["close"].pct_change(252)
+for n in [1, 5, 20, 60, 126, 252]:
+    market[f"ret_{n}d"] = g.close.pct_change(n)
 
-market["vol_20d"] = (
-    g["ret_1d"].transform(lambda x: x.rolling(20).std())
-)
-market["vol_60d"] = (
-    g["ret_1d"].transform(lambda x: x.rolling(60).std())
-)
-market["vol_126d"] = (
-    g["ret_1d"].transform(lambda x: x.rolling(126).std())
-)
+for n in [20, 60, 126]:
+    market[f"vol_{n}d"] = g.ret_1d.transform(
+        lambda x, n=n: x.rolling(n).std()
+    )
 
-market["volume_ratio_20d"] = (
-    market["volume"] /
-    g["volume"].transform(lambda x: x.rolling(20).mean())
+market["volume_ratio_20d"] = market.volume / g.volume.transform(
+    lambda x: x.rolling(20).mean()
 )
-
-market["turnover_ratio_20d"] = (
-    market["turnover"] /
-    g["turnover"].transform(lambda x: x.rolling(20).mean())
+market["turnover_ratio_20d"] = market.turnover / g.turnover.transform(
+    lambda x: x.rolling(20).mean()
 )
-
-market["price_vs_20d"] = (
-    market["close"] /
-    g["close"].transform(lambda x: x.rolling(20).mean())
-    - 1
-)
-
-market["price_vs_60d"] = (
-    market["close"] /
-    g["close"].transform(lambda x: x.rolling(60).mean())
-    - 1
-)
+market["price_vs_20d"] = market.close / g.close.transform(
+    lambda x: x.rolling(20).mean()
+) - 1
+market["price_vs_60d"] = market.close / g.close.transform(
+    lambda x: x.rolling(60).mean()
+) - 1
 
 FEATURES = [
-    "ret_1d",
-    "ret_5d",
-    "ret_20d",
-    "ret_60d",
-    "ret_126d",
-    "ret_252d",
-    "vol_20d",
-    "vol_60d",
-    "vol_126d",
-    "volume_ratio_20d",
-    "turnover_ratio_20d",
-    "price_vs_20d",
-    "price_vs_60d",
+    "ret_1d", "ret_5d", "ret_20d", "ret_60d", "ret_126d", "ret_252d",
+    "vol_20d", "vol_60d", "vol_126d",
+    "volume_ratio_20d", "turnover_ratio_20d",
+    "price_vs_20d", "price_vs_60d"
 ]
 
-features = market[["isin", "trade_date"] + FEATURES].copy()
-features = features.rename(columns={"trade_date": "decision_date"})
-
-
-# ------------------------------------------------------------
-# 3. CONNECT FEATURES TO PHASE 3 TARGETS
-# ------------------------------------------------------------
-
-model_df = target.merge(
-    features,
-    on=["isin", "decision_date"],
-    how="inner",
+features = market[["isin", "trade_date"] + FEATURES].rename(
+    columns={"trade_date": "decision_date"}
 )
 
-model_df = model_df.replace([np.inf, -np.inf], np.nan)
-
-model_df = model_df.dropna(
-    subset=FEATURES + ["target_excess_return_252d"]
+df = (
+    target.merge(features, on=["isin", "decision_date"], how="inner")
+          .replace([np.inf, -np.inf], np.nan)
+          .dropna(subset=FEATURES + ["target_excess_return_252d"])
 )
 
-if model_df.empty:
-    raise RuntimeError("No usable training rows after merge.")
+if df.empty:
+    raise RuntimeError("No usable Phase 3/feature training rows.")
 
-print("Training rows :", f"{len(model_df):,}")
-print("Companies     :", f"{model_df['isin'].nunique():,}")
-print(
-    "Decision dates:",
-    f"{model_df['decision_date'].nunique():,}"
-)
+print("Training rows :", f"{len(df):,}")
+print("Companies     :", f"{df.isin.nunique():,}")
+print("Decision dates:", f"{df.decision_date.nunique():,}")
 
-
-# ------------------------------------------------------------
-# 4. TIME-AWARE VALIDATION
-# ------------------------------------------------------------
-
-dates = np.sort(model_df["decision_date"].unique())
-
+# Time-aware validation
+dates = np.sort(df.decision_date.unique())
 if len(dates) < 20:
-    raise RuntimeError("Not enough historical decision dates for validation.")
+    raise RuntimeError("Not enough decision dates for validation.")
 
-split_date = dates[int(len(dates) * 0.80)]
-
-train = model_df[
-    model_df["decision_date"] < split_date
-]
-
-valid = model_df[
-    model_df["decision_date"] >= split_date
-]
+split = dates[int(len(dates) * 0.80)]
+train = df[df.decision_date < split]
+valid = df[df.decision_date >= split]
 
 model = HistGradientBoostingRegressor(
     learning_rate=0.05,
     max_iter=250,
     max_leaf_nodes=31,
     l2_regularization=1.0,
-    random_state=42,
+    random_state=42
 )
 
-model.fit(
-    train[FEATURES],
-    train["target_excess_return_252d"],
+model.fit(train[FEATURES], train.target_excess_return_252d)
+pred = model.predict(valid[FEATURES])
+
+mae = mean_absolute_error(valid.target_excess_return_252d, pred)
+r2 = r2_score(valid.target_excess_return_252d, pred)
+
+eval_df = valid[["decision_date", "target_excess_return_252d"]].copy()
+eval_df["prediction"] = pred
+
+ic = (
+    eval_df.groupby("decision_date")
+           .apply(lambda x: x.prediction.corr(x.target_excess_return_252d),
+                  include_groups=False)
+           .dropna()
+           .mean()
 )
-
-valid_prediction = model.predict(valid[FEATURES])
-
-mae = mean_absolute_error(
-    valid["target_excess_return_252d"],
-    valid_prediction,
-)
-
-r2 = r2_score(
-    valid["target_excess_return_252d"],
-    valid_prediction,
-)
-
-evaluation = valid[
-    ["decision_date", "target_excess_return_252d"]
-].copy()
-
-evaluation["prediction"] = valid_prediction
-
-daily_ic = (
-    evaluation
-    .groupby("decision_date")
-    .apply(
-        lambda x: x["prediction"].corr(
-            x["target_excess_return_252d"]
-        ),
-        include_groups=False,
-    )
-    .dropna()
-)
-
-mean_ic = float(daily_ic.mean())
 
 print("\n=== MODEL VALIDATION ===")
 print("Train rows :", f"{len(train):,}")
 print("Valid rows :", f"{len(valid):,}")
-print("Split date :", pd.Timestamp(split_date).date())
+print("Split date :", pd.Timestamp(split).date())
 print("MAE        :", round(mae, 6))
 print("R2         :", round(r2, 6))
-print("Mean Daily IC:", round(mean_ic, 6))
+print("Mean Daily IC:", round(ic, 6))
 
+# Final model on all historical data
+model.fit(df[FEATURES], df.target_excess_return_252d)
 
-# ------------------------------------------------------------
-# 5. RETRAIN ON ALL HISTORICAL DATA
-# ------------------------------------------------------------
-
-model.fit(
-    model_df[FEATURES],
-    model_df["target_excess_return_252d"],
+# Latest inference
+latest_date = market.trade_date.max()
+latest = (
+    market[market.trade_date.eq(latest_date)]
+    .replace([np.inf, -np.inf], np.nan)
+    .dropna(subset=FEATURES)
+    .copy()
 )
 
+latest["predicted_excess_return_252d"] = model.predict(latest[FEATURES])
+latest = latest.sort_values("predicted_excess_return_252d", ascending=False)
 
-# ------------------------------------------------------------
-# 6. SCORE LATEST AVAILABLE MARKET DATE
-# ------------------------------------------------------------
-
-latest_date = market["trade_date"].max()
-
-latest = market[
-    market["trade_date"].eq(latest_date)
-].copy()
-
-latest = latest.replace(
-    [np.inf, -np.inf],
-    np.nan,
-)
-
-latest = latest.dropna(
-    subset=FEATURES
-)
-
-latest["predicted_excess_return_252d"] = (
-    model.predict(latest[FEATURES])
-)
-
-latest = latest.sort_values(
-    "predicted_excess_return_252d",
-    ascending=False,
-)
-
-name_col = (
-    "instrument_name"
-    if "instrument_name" in latest.columns
-    else "company_name"
-)
+name_col = "instrument_name" if "instrument_name" in latest else "company_name"
 
 ranking = latest[
-    [
-        "isin",
-        "nse_symbol",
-        name_col,
-        "close",
-        "predicted_excess_return_252d",
-    ]
-].copy()
+    ["isin", "nse_symbol", name_col, "close", "predicted_excess_return_252d"]
+].rename(columns={name_col: "company_name"})
 
-ranking = ranking.rename(
-    columns={name_col: "company_name"}
-)
+ranking.insert(0, "rank", np.arange(1, len(ranking) + 1))
 
-ranking["rank"] = np.arange(
-    1,
-    len(ranking) + 1,
-)
+# Save
+ranking_path = OUT / "latest_stock_ranking.parquet"
+training_path = OUT / "training_dataset.parquet"
+metadata_path = OUT / "phase4_metadata.json"
 
-ranking = ranking[
-    [
-        "rank",
-        "isin",
-        "nse_symbol",
-        "company_name",
-        "close",
-        "predicted_excess_return_252d",
-    ]
-]
+ranking.to_parquet(ranking_path, index=False)
+df.to_parquet(training_path, index=False)
 
-
-# ------------------------------------------------------------
-# 7. SAVE RESULTS
-# ------------------------------------------------------------
-
-ranking_path = OUT_DIR / "latest_stock_ranking.parquet"
-training_path = OUT_DIR / "training_dataset.parquet"
-metadata_path = OUT_DIR / "phase4_metadata.json"
-
-ranking.to_parquet(
-    ranking_path,
-    index=False,
-)
-
-model_df.to_parquet(
-    training_path,
-    index=False,
-)
-
-metadata = {
+metadata_path.write_text(json.dumps({
     "model": "HistGradientBoostingRegressor",
-    "training_start": str(
-        model_df["decision_date"].min().date()
-    ),
-    "training_end": str(
-        model_df["decision_date"].max().date()
-    ),
-    "inference_date": str(
-        latest_date.date()
-    ),
+    "training_start": str(df.decision_date.min().date()),
+    "training_end": str(df.decision_date.max().date()),
+    "inference_date": str(latest_date.date()),
     "target": "target_excess_return_252d",
     "features": FEATURES,
     "validation_mae": float(mae),
     "validation_r2": float(r2),
-    "mean_daily_information_coefficient": mean_ic,
-    "rows_scored": int(len(ranking)),
-}
-
-metadata_path.write_text(
-    json.dumps(metadata, indent=2),
-    encoding="utf-8",
-)
-
-
-# ------------------------------------------------------------
-# 8. FINAL OUTPUT
-# ------------------------------------------------------------
+    "mean_daily_information_coefficient": float(ic),
+    "rows_scored": int(len(ranking))
+}, indent=2), encoding="utf-8")
 
 print("\n" + "=" * 60)
 print("CURRENT MODEL RANKING")
 print("=" * 60)
-
 print("Inference date:", latest_date.date())
 print("Stocks scored :", f"{len(ranking):,}")
-
 print("\nTOP 25:")
-print(
-    ranking.head(25).to_string(index=False)
-)
+print(ranking.head(25).to_string(index=False))
 
-ral = ranking[
-    ranking["nse_symbol"].str.upper().eq("RALLIS")
-    | ranking["nse_symbol"].str.upper().eq("RAL")
-]
-
+ral = ranking[ranking.nse_symbol.str.upper().isin(["RALLIS", "RAL"])]
 if not ral.empty:
     print("\n=== RAL POSITION ===")
     print(ral.to_string(index=False))
