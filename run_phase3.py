@@ -1,69 +1,12 @@
-# ============================================================
-# PHASE 3 — TARGET CREATION
-# run_phase3.py
-# ============================================================
-
-from datetime import date
 from pathlib import Path
 import json
-
 import pandas as pd
 from IPython.display import display
+from src.data.providers.nse_market import load_market_data
 
-from src.data.providers import nse_market
-
-
-PROJECT_ROOT = Path(__file__).resolve().parent
-NOTEBOOK_PATH = PROJECT_ROOT / "notebooks" / "03-target-creation.ipynb"
-TARGET_DIR = PROJECT_ROOT / "data" / "processed" / "targets"
-
-HISTORY_START = date(2024, 7, 8)
-
-
-def load_market_history():
-    """Acquire the historical NSE market data required by Phase 3."""
-
-    print("\n" + "=" * 60)
-    print("PHASE 3 — ACQUIRING HISTORICAL MARKET DATA")
-    print("=" * 60)
-
-    today = date.today()
-    print(f"\nRange: {HISTORY_START} → {today}")
-
-    df = nse_market.collect_market_data(
-        HISTORY_START,
-        today,
-    )
-
-    if df.empty:
-        raise RuntimeError(
-            "Historical market acquisition returned no data."
-        )
-
-    df["trade_date"] = pd.to_datetime(
-        df["trade_date"],
-        errors="coerce",
-    )
-
-    df = (
-        df
-        .drop_duplicates(
-            subset=["trade_date", "instrument_id"]
-        )
-        .sort_values(["nse_symbol", "trade_date"])
-        .reset_index(drop=True)
-    )
-
-    print(f"\nRows        : {len(df):,}")
-    print(f"Companies   : {df['isin'].nunique():,}")
-    print(f"Trading days: {df['trade_date'].nunique():,}")
-    print(
-        f"Date range  : "
-        f"{df['trade_date'].min().date()} → "
-        f"{df['trade_date'].max().date()}"
-    )
-
-    return df
+ROOT = Path(__file__).resolve().parent
+NOTEBOOK = ROOT / "notebooks/03-target-creation.ipynb"
+TARGET_DIR = ROOT / "data/processed/targets"
 
 
 def main():
@@ -71,32 +14,42 @@ def main():
     print("PHASE 3 — TARGET CREATION")
     print("=" * 60)
 
-    if not NOTEBOOK_PATH.exists():
-        raise FileNotFoundError(
-            f"Notebook not found: {NOTEBOOK_PATH}"
+    if not NOTEBOOK.exists():
+        raise FileNotFoundError(NOTEBOOK)
+
+    history = load_market_data()
+
+    if history.empty:
+        raise RuntimeError(
+            "Phase 2 market history not found. Run Phase 2 first."
         )
 
-    notebook = json.loads(
-        NOTEBOOK_PATH.read_text(encoding="utf-8")
+    history["trade_date"] = pd.to_datetime(history["trade_date"])
+    history = (
+        history
+        .drop_duplicates(["trade_date", "instrument_id"])
+        .sort_values(["nse_symbol", "trade_date"])
+        .reset_index(drop=True)
     )
 
-    if notebook.get("nbformat") != 4:
-        raise ValueError("Expected nbformat 4 notebook.")
+    print(f"\nRows        : {len(history):,}")
+    print(f"Companies   : {history['isin'].nunique():,}")
+    print(f"Trading days: {history['trade_date'].nunique():,}")
+    print(
+        f"Date range  : {history['trade_date'].min().date()} → "
+        f"{history['trade_date'].max().date()}"
+    )
 
-    cells = [
-        c for c in notebook.get("cells", [])
-        if c.get("cell_type") == "code"
-    ]
+    nb = json.loads(NOTEBOOK.read_text(encoding="utf-8"))
+    cells = [c for c in nb["cells"] if c["cell_type"] == "code"]
 
     if len(cells) != 4:
-        raise ValueError(
-            f"Expected exactly 4 Phase 3 code cells; found {len(cells)}."
-        )
+        raise ValueError(f"Expected 4 code cells, found {len(cells)}")
 
-    namespace = {
+    ns = {
         "__name__": "__main__",
-        "__file__": str(NOTEBOOK_PATH),
-        "recent_history": load_market_history(),
+        "__file__": str(NOTEBOOK),
+        "recent_history": history,
         "display": display,
     }
 
@@ -104,105 +57,51 @@ def main():
         print("\n" + "=" * 60)
         print(f"EXECUTING PHASE 3 CELL {i}/4")
         print("=" * 60)
-
         exec(
             compile(
-                "".join(cell.get("source", [])),
+                "".join(cell["source"]),
                 f"<phase3_cell_{i}>",
                 "exec",
             ),
-            namespace,
+            ns,
         )
 
-    # --------------------------------------------------------
-    # Final validation
-    # --------------------------------------------------------
-
-    required = [
+    required = {
         "nifty_ntr_benchmark",
         "phase3_target",
         "final_target",
         "phase3_target_metadata",
-    ]
+    }
 
-    missing = [
-        name for name in required
-        if name not in namespace
-    ]
-
+    missing = required - ns.keys()
     if missing:
-        raise RuntimeError(
-            f"Missing Phase 3 outputs: {missing}"
-        )
+        raise RuntimeError(f"Missing outputs: {sorted(missing)}")
 
-    final_target = namespace["final_target"]
-    target_column = "target_excess_return_252d"
+    target = ns["final_target"]
+    col = "target_excess_return_252d"
 
-    if final_target.empty:
-        raise RuntimeError("Final target is empty.")
+    if target.empty or col not in target.columns or target[col].isna().any():
+        raise RuntimeError("Invalid final target.")
 
-    if target_column not in final_target.columns:
-        raise RuntimeError(
-            f"Missing target column: {target_column}"
-        )
+    TARGET_DIR.mkdir(parents=True, exist_ok=True)
 
-    if final_target[target_column].isna().any():
-        raise RuntimeError(
-            "Final target contains NaN values."
-        )
+    target_path = TARGET_DIR / "phase3_target.parquet"
+    metadata_path = TARGET_DIR / "phase3_target_metadata.json"
 
-    # --------------------------------------------------------
-    # Persist final target
-    # --------------------------------------------------------
-
-    TARGET_DIR.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    target_path = (
-        TARGET_DIR / "phase3_target.parquet"
-    )
-
-    metadata_path = (
-        TARGET_DIR / "phase3_target_metadata.json"
-    )
-
-    final_target.to_parquet(
-        target_path,
-        index=False,
-    )
-
+    target.to_parquet(target_path, index=False)
     metadata_path.write_text(
-        json.dumps(
-            namespace["phase3_target_metadata"],
-            indent=2,
-        ),
+        json.dumps(ns["phase3_target_metadata"], indent=2),
         encoding="utf-8",
     )
 
-    # --------------------------------------------------------
-    # Final status
-    # --------------------------------------------------------
-
     print("\n" + "=" * 60)
-    print("PHASE 3 RUNNER VALIDATION")
+    print("PHASE 3 COMPLETE")
     print("=" * 60)
-
-    print(f"\nFinal target rows : {len(final_target):,}")
-    print(f"Companies         : {final_target['isin'].nunique():,}")
-    print(
-        f"Decision dates    : "
-        f"{final_target['decision_date'].nunique():,}"
-    )
-    print(f"Target column     : {target_column}")
-
-    print(f"\nTarget saved      : {target_path}")
-    print(f"Metadata saved    : {metadata_path}")
-
-    print("\n" + "=" * 60)
-    print("PHASE 3: COMPLETE")
-    print("=" * 60)
+    print("Rows:", f"{len(target):,}")
+    print("Companies:", f"{target['isin'].nunique():,}")
+    print("Decision dates:", f"{target['decision_date'].nunique():,}")
+    print("Target:", target_path)
+    print("Metadata:", metadata_path)
 
 
 if __name__ == "__main__":
