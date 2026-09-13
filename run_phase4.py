@@ -1,5 +1,6 @@
 from pathlib import Path
 import json
+import textwrap
 from IPython.display import display
 
 
@@ -34,19 +35,24 @@ def run_phase4():
         print(f"EXECUTING PHASE 4 CELL {i}/{len(cells)}")
         print("=" * 60)
 
-        source = "".join(cell["source"])
-        exec(
-            compile(source, f"<phase4_cell_{i}>", "exec"),
-            ns
-        )
+        source = textwrap.dedent("".join(cell["source"]))
 
-    required = {
-        "model",
-        "ranking",
-        "metadata",
-    }
+        try:
+            code = compile(
+                source,
+                f"<phase4_cell_{i}>",
+                "exec"
+            )
+        except IndentationError as e:
+            print(f"\nPhase 4 Cell {i} has an indentation error:")
+            print(e)
+            raise
 
-    missing = required - ns.keys()
+        exec(code, ns)
+
+    required = {"model", "ranking", "metadata"}
+    missing = required - set(ns)
+
     if missing:
         raise RuntimeError(
             f"Phase 4 did not produce required outputs: {sorted(missing)}"
@@ -55,6 +61,7 @@ def run_phase4():
     print("\n" + "=" * 60)
     print("PHASE 4 COMPLETE")
     print("=" * 60)
+
     print("Inference date:", metadata["inference_date"])
     print("Stocks scored :", metadata["rows_scored"])
     print("Target        :", metadata["target"])
@@ -73,6 +80,7 @@ def run_phase4():
             6
         )
     )
+
     print("\nTop 10:")
     display(ranking.head(10))
 
