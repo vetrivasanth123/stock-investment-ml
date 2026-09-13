@@ -3,8 +3,8 @@ import json
 from IPython.display import display
 
 
-ROOT = Path(__file__).resolve().parents[1]
-NOTEBOOK = ROOT / "notebooks/04-ml-model.ipynb"
+ROOT = Path(__file__).resolve().parent
+NOTEBOOK = ROOT / "notebooks" / "04-ml-model.ipynb"
 
 
 def run_phase4():
