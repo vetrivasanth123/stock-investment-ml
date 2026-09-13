@@ -18,9 +18,9 @@ def run_phase4():
     nb = json.loads(NOTEBOOK.read_text(encoding="utf-8"))
     cells = [c for c in nb["cells"] if c["cell_type"] == "code"]
 
-    if len(cells) != 5:
+    if len(cells) != 4:
         raise ValueError(
-            f"Expected 5 code cells, found {len(cells)}."
+            f"Expected 4 code cells, found {len(cells)}."
         )
 
     ns = {
